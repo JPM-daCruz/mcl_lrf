@@ -4,8 +4,6 @@ import numpy as np
 import math
 import rospy
 import threading
-import scipy.integrate as integrate
-import scipy.special as special
 from decimal import *
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PoseArray
@@ -18,21 +16,21 @@ from geometry_msgs.msg import Twist
 init=0
 old_pose=list()
 map_info=[]
-n_particulas=500
-map_width=324
-map_height=323
+n_particulas=1000
+map_width=600
+map_height=550
 resolution=0.05
-xorigin=-8.2
-yorigin=-8.1
-alpha1=0.2
-alpha2=0.2
-alpha3=0.2
-alpha4=0.2
-laser_min_range=0.0
-laser_max_range=8.0
-min_angle=0
-max_angle=180
-pose=(-7.0, -7.0, 45)
+xorigin=0.0
+yorigin=0.0
+alpha1=3.0
+alpha2=3.0
+alpha3=3.0
+alpha4=3.0
+laser_min_range=0.2
+laser_max_range=5.6
+min_angle=math.radians(-30.0)
+max_angle=math.radians(210)
+initialpose=(10.6, 8.75, 0.0)
 z_hit=0.95
 z_short=0.1
 z_max=0.05
@@ -147,15 +145,34 @@ def angle_diff(t1,t2):
     
 def create_samples(M,W,H):
     particulas=list()
+    print "on"
     for i in range(0,M):
-        x=(random.gauss(-6.92,0.1))
-        y=(random.gauss(-6.92,0.1))
+        x=(random.gauss(initialpose[0],0.5))
+        y=(random.gauss(initialpose[1],0.5))
         (w,h)=xy_to_wh(x,y)
-        while(map_info.data[int(wh_to_map(w,h))]!=0):	
-            x=(random.gauss(-6.92,0.1))
-            y=(random.gauss(-6.92,0.1))
-            (w,h)=xy_to_wh(x,y) 
-        teta=(random.gauss(math.pi/4,0.1))
+        #while(map_info.data[int(wh_to_map(w,h))]!=0):	
+        #    x=(random.gauss(initialpose[0],10))
+        #    y=(random.gauss(initialpose[1],10))
+        #    (w,h)=xy_to_wh(x,y) 
+        teta=(random.gauss(initialpose[2],0.2))
+        weight=float(float(1)/float(M))
+        n_part=0
+	particula=list([x,y,teta,weight,n_part])
+	particulas.append(particula)
+    return particulas
+
+
+def create_samples_global(M,W,H):
+    particulas=list()
+    for i in range(0,M):
+        xi=(random.randint(0,W-1))
+        yi=(random.randint(0,H-1))
+        (x,y)=map_to_xy(wh_to_map(xi,yi)) 
+        while(map_info.data[int(wh_to_map(xi,yi))]!=0):	
+            xi=(random.randint(0,W-1))
+            yi=(random.randint(0,H-1))
+            (x,y)=map_to_xy(wh_to_map(xi,yi))
+        teta=(random.uniform(-math.pi,math.pi))
         weight=float(float(1)/float(M))
         n_part=0
 	particula=list([x,y,teta,weight,n_part])
@@ -181,6 +198,9 @@ def create_pose(particula):
 def sample_motion_model(msg):
     global init
     global old_pose
+    sumx=0
+    sumy=0
+    sumteta=0
     if init==0:
         x=msg.pose.pose.position.x
         y=msg.pose.pose.position.y
@@ -224,7 +244,7 @@ def sample_motion_model(msg):
     
     
 def measurement_model(msg):
-    increment=6
+    increment=int(725/30)
     total_weight=0
     pesos=[] 
     k=0   
@@ -235,33 +255,40 @@ def measurement_model(msg):
         p=0
         pz=0 
         for i in range(0,len(msg.ranges),increment):
-            angle=i-min_angle
-            zteste=map_calc_range(particulas[j][0], particulas[j][1], (particulas[j][2]+math.radians(angle)-(math.pi/2)))
-            z=msg.ranges[i]-zteste
-            pz+=z_hit*math.exp(-(z*z)/(2 * sigma_hit *sigma_hit))     
-            if(msg.ranges[i]<laser_max_range):         
-                pz+=z_rand*1.0/laser_max_range
-            if(z<0):
-                p_short=1.0/(1-math.exp(-lambda_short*zteste)      *lambda_short*math.exp(-lambda_short*msg.ranges[i]))
-            if(msg.ranges[i]==laser_max_range):
-                pz+=z_max*1.0
-            p+=pz
-            particulas[j][3]=q*p
-            total_weight+=particulas[j][3]
+            if not np.isnan(msg.ranges[i]):
+                angle=math.radians(i)-min_angle
+                zteste=map_calc_range(particulas[j][0], particulas[j][1], (particulas[j][2]+angle-(math.pi/2)))
+                z=msg.ranges[i]-zteste
+                pz+=z_hit*math.exp(-(z*z)/(2 * sigma_hit *sigma_hit))     
+                if(msg.ranges[i]<laser_max_range):         
+                    pz+=z_rand*1.0/laser_max_range
+                if(z<0):
+                    p_short=1.0/(1-math.exp(-lambda_short*zteste)*lambda_short*math.exp(-lambda_short*msg.ranges[i]))
+                if(msg.ranges[i]==laser_max_range):
+                    pz+=z_max*1.0
+        p+=pz
+        particulas[j][3]=q*p
+        total_weight+=particulas[j][3]
     #resampling
+    best=0
     for i in range(0,n_particulas):
+        if particulas[i][3]>best:
+            best=particulas[i]
         particulas[i][3]=particulas[i][3]/total_weight
         pesos.append(particulas[i][3])
+    posef=create_pose(best)
+    pose_pub.publish(posef)
     cum_matrix=np.cumsum(pesos)
+    T=np.linspace(0,1-1/n_particulas,num=n_particulas+1)
     for j in range(0,n_particulas):
 		i=0
-		x=random.uniform(0,1)
-		while x>cum_matrix[i] and i<99:
+		x=random.uniform(0,1)/n_particulas
+		while (T[j]+x)>cum_matrix[i] and i<=n_particulas:
 			i+=1
                 particulas[i][4]+=1
                 teste+=1
     pteste=particulas
-    for i in range(0,n_particulas-1):
+    for i in range(0,int(0.9*n_particulas)):
         for j in range(0,pteste[i][4]): 
             x=pteste[i][0]
             y=pteste[i][1]
@@ -270,8 +297,20 @@ def measurement_model(msg):
             n_part=0        
 	    particula=list([x,y,teta,weight,n_part])
 	    particulas[k]=particula
-            k+=1     
-    print "move"
+            k+=1
+    for i in range(int(0.9*n_particulas),n_particulas):
+        xi=(random.randint(0,map_width-1))
+        yi=(random.randint(0,map_height-1))
+        (x,y)=map_to_xy(wh_to_map(xi,yi)) 
+        while(map_info.data[int(wh_to_map(xi,yi))]!=0):	
+            xi=(random.randint(0,map_width-1))
+            yi=(random.randint(0,map_height-1))
+            (x,y)=map_to_xy(wh_to_map(xi,yi))
+        teta=(random.uniform(-math.pi,math.pi))
+        weight=float(float(1)/float(n_particulas))
+        n_part=0
+	particulas[i]=[x,y,teta,weight,n_part]
+           
        
 
 
@@ -297,6 +336,7 @@ class InfoGetter(object):
 
 
 if __name__ == '__main__':
+    print "on"
     #initializes a node
     rospy.init_node('particles')
     #Get the map info
@@ -307,12 +347,15 @@ if __name__ == '__main__':
     #create a variable type PoseArray to represent the particles on Rviz
     group=PoseArray()
     group.header.frame_id="map"
+    posef=Pose()
+    posef=child_frame_id="base_link"
     #randomly create particles only in the free space of the map
-    particulas=create_samples(n_particulas,map_width,map_height)
+    particulas=create_samples_global(n_particulas,map_width,map_height)
+    pose_pub = rospy.Publisher("partpose", Pose, queue_size=1)
     part_array_pub = rospy.Publisher("partarray", PoseArray, queue_size=1)
     for i in range(0,n_particulas):
         part_array=create_pose(particulas[i])
         group.poses.append(part_array)
-    rospy.Subscriber("odom", Odometry, sample_motion_model)
-    rospy.Subscriber("base_scan_1", LaserScan, measurement_model)
+    rospy.Subscriber("RosAria/pose", Odometry, sample_motion_model)
+    rospy.Subscriber("scan", LaserScan, measurement_model)
     rospy.spin()  
