@@ -1,2 +1,1 @@
-# Autonomous Systems
-# mcl_lrf
+# Monte Carlo Localization using a Laser Rangefinder
